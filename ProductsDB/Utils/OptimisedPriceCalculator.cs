@@ -1,116 +1,63 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
 using ProductsDB.Data;
 using ProductsDB.Models;
 
-namespace ProductsDB.Pages
+namespace ProductsDB.Utils
 {
-    public class SkuModel : PageModel
+    public static class OptimisedPriceCalculator
     {
-        public AppDbContext _context;
-        public string ProductId { get; set; }
-        public bool ShowProduct => !string.IsNullOrEmpty(ProductId);
+        private static List<OptimisedPrice> OptimisedPrices;
 
-        public IQueryable<Product> Products { get; set; }
-        public IQueryable<PriceDetail> ProductPrices { get; set; }
-        public List<OptimisedPrice> OptimisedPrices { get; set; }
-
-        private readonly ILogger<SkuModel> _logger;
-
-        public SkuModel(ILogger<SkuModel> logger, AppDbContext context)
-        {
-            _logger = logger;
-            _context = context;
-        }
-
-        public void OnGet(string id)
-        {
-            ProductId = id.Equals("all") ? null : id;
-
-            if (ShowProduct)
-            {
-                // get price details for the product and sort by market->currency->date
-                ProductPrices = _context.PriceDetails.AsNoTracking()
-                    .Where(p => p.CatalogEntryCode == ProductId)
-                    .OrderBy(p => p.MarketId)
-                    .ThenBy(p => p.CurrencyCode)
-                    .ThenBy(p => p.ValidUntil);
-
-                calculateOptimisedPrices(ProductPrices.ToList());
-            }
-            else
-            {
-                // show list with 10 products
-                Products = _context.Products.AsNoTracking().Take(10);
-            }
-
-            
-        }
-
-        private void calculateOptimisedPrices(List<PriceDetail> prices)
+        public static List<OptimisedPrice> Calculate(List<PriceDetail> ProductPrices)
         {
             // list to hold optimised items
             OptimisedPrices = new List<OptimisedPrice>();
-            // index for traversing PriceDetail list
-            int i = 0;
+            
             // previous and current items for comparesment
             PriceDetail previous = null;
             PriceDetail current = null;
             // product's main price for country-currency
             decimal basePrice = 0;
 
+
+            // start of the list
+            current = ProductPrices[0];
+            // convert first item to optimised
+            DateTime untilDT = (DateTime)(current.ValidUntil is null ? ProductPrices[1].ValidFrom : current.ValidUntil);
+
+            var firstItem = CreateOptimisedPriceItem(
+                current.MarketId,
+                current.CurrencyCode,
+                current.CatalogEntryCode,
+                current.ValidFrom,
+                untilDT,
+                current.UnitPrice
+                );
+
+            OptimisedPrices.Add(firstItem);
+
+            basePrice = current.UnitPrice;
+            current.ValidUntil = untilDT;
+            previous = current;
+            
+
             // go through PriceDetail list
-            while (i < prices.Count())
+            for (int i = 1; i < ProductPrices.Count; i++) 
             {
                 // get the item to compare
-                current = prices[i];
+                current = ProductPrices[i];
 
-
-                if (previous is null)
+                if (current.MarketId != previous.MarketId || current.CurrencyCode != previous.CurrencyCode)
                 {
-                    // start of the list
-                    // convert first item to optimised
-                    DateTime until = (DateTime)(current.ValidUntil is null ? prices[i + 1].ValidFrom : current.ValidUntil);
-
-                    var item = CreateOptimisedPriceItem(
-                        current.MarketId,
-                        current.CurrencyCode,
-                        current.CatalogEntryCode,
-                        current.ValidFrom,
-                        until,
-                        current.UnitPrice
-                        );
-
-                    OptimisedPrices.Add(item);
-
-                    basePrice = current.UnitPrice;
-                    current.ValidUntil = until;
-                    previous = current;
-                    i++;
-                }
-
-                else if (current.MarketId != previous.MarketId || current.CurrencyCode != previous.CurrencyCode)
-                {
-                    Console.WriteLine("new block start");
-
-                    Console.WriteLine(current.MarketId);
-                    Console.WriteLine(previous.MarketId);
-
-
                     // new market-currency block started
                     // 'close' previous block with base price
                     var item = CreateOptimisedPriceItem(
                         previous.MarketId,
                         previous.CurrencyCode,
                         previous.CatalogEntryCode,
-                        (DateTime) previous.ValidUntil,
+                        (DateTime)previous.ValidUntil,
                         (DateTime?)null,
                         basePrice
                         );
@@ -118,36 +65,22 @@ namespace ProductsDB.Pages
                     OptimisedPrices.Add(item);
 
                     basePrice = current.UnitPrice;
-                    if (i != prices.Count()-1)
+                    if (i != ProductPrices.Count - 1)
                     {
-                        DateTime until = (DateTime)(current.ValidUntil is null ? prices[i + 1].ValidFrom : current.ValidUntil);
+                        DateTime until = (DateTime)(current.ValidUntil is null ? ProductPrices[i + 1].ValidFrom : current.ValidUntil);
                         current.ValidUntil = until;
                     }
-                    
+
                     previous = current;
-                    i++;
                 }
-                 
+
                 else
                 {
-                    // manage dates that are null
-                    //var previousUntill = (DateTime)(current.ValidUntil is null ? prices[i + 1].ValidFrom : current.ValidUntil);
-                    //var crentUntill = (DateTime)(current.ValidUntil is null ? prices[i + 1].ValidFrom : current.ValidUntil);
                     // compare validity time periods
-                    //if (DateTime.Compare(current.ValidFrom, previous.ValidUntil) < 0)
-
-                    Console.WriteLine("comparing...");
-                    Console.WriteLine(previous.ValidUntil);
-                    Console.WriteLine(current.ValidUntil);
-
-                    Console.WriteLine(current.MarketId);
-                    Console.WriteLine(previous.MarketId);
-                    Console.WriteLine(current.CurrencyCode);
-                    Console.WriteLine(previous.CurrencyCode);
 
                     var compare = DateTime.Compare((DateTime)previous.ValidUntil, current.ValidFrom);
 
-                    if (compare == 0) 
+                    if (compare == 0)
                     {
                         // dates are the same
                         // convert item into optimised 'as is'
@@ -164,7 +97,7 @@ namespace ProductsDB.Pages
                         previous = current;
                     }
 
-                    if (compare < 0)
+                    else if (compare < 0)
                     {
                         // there is a gap between two periods
                         // fill it with 'base price'
@@ -194,12 +127,12 @@ namespace ProductsDB.Pages
                         previous = current;
                     }
 
-                    if (compare > 0)
+                    else
                     {
                         // periods are overlaping
                         var compareT = DateTime.Compare((DateTime)previous.ValidUntil, (DateTime)current.ValidUntil);
 
-                        if (compareT < 0 || compareT == 0)
+                        if (compareT <= 0)
                         {
                             // previous 'until' is within current range
                             // OR both end at the same time
@@ -215,7 +148,7 @@ namespace ProductsDB.Pages
                             // prev price > curr price ?
                             // cut prev range
                             if (previous.UnitPrice > current.UnitPrice)
-                            { 
+                            {
                                 var item = CreateOptimisedPriceItem(
                                     previous.MarketId,
                                     previous.CurrencyCode,
@@ -276,12 +209,11 @@ namespace ProductsDB.Pages
 
                                 previous.ValidFrom = (DateTime)current.ValidUntil;
                             }
-                            
+
                         }
 
                     }
 
-                    i++;
                 }
 
 
@@ -289,9 +221,6 @@ namespace ProductsDB.Pages
             }
 
             // Parse final items
-
-            
-
             if (!(previous.ValidUntil is null))
             {
                 var preFinalItem = CreateOptimisedPriceItem(
@@ -327,10 +256,10 @@ namespace ProductsDB.Pages
                 OptimisedPrices.Add(preFinalItem);
             }
 
-
+            return OptimisedPrices;
         }
 
-        private OptimisedPrice CreateOptimisedPriceItem(string market, string currency, string id, DateTime from, DateTime? till, decimal price)
+        private static OptimisedPrice CreateOptimisedPriceItem(string market, string currency, string id, DateTime from, DateTime? till, decimal price)
         {
             OptimisedPrice item = new OptimisedPrice();
             item.MarketId = market;
